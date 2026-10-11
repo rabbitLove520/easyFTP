@@ -1,0 +1,49 @@
+# 发布 Release 时自动构建并上传产物（assets）
+# 触发条件：Release 发布（点 "Publish release"，含草稿转正式）
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write  # 上传 assets 需要写权限
+
+jobs:
+  build-linux:
+    # 固定 ubuntu-22.04（glibc 2.35）构建，产物可运行于更多发行版；
+    # 若不需要兼容旧系统可改为 ubuntu-latest
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y libreadline-dev
+
+      - name: Configure
+        # 静态链接 libstdc++/libgcc，产物不依赖目标机器的 GCC 运行库版本
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_EXE_LINKER_FLAGS="-static-libstdc++ -static-libgcc"
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Smoke test
+        run: printf 'exit\n' | ./build/easyftp
+
+      - name: Package
+        run: |
+          strip build/easyftp
+          TAG="${{ github.event.release.tag_name }}"
+          mkdir -p dist
+          tar -C build -czf "dist/easyftp-${TAG}-linux-amd64.tar.gz" easyftp
+          cd dist
+          sha256sum easyftp-*.tar.gz > "easyftp-${TAG}-checksums.txt"
+
+      - name: Upload assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/* --clobber
